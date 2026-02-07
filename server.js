@@ -318,11 +318,11 @@ async function sendConfirmationSMS(appointment, settings) {
         await twilio.messages.create({
             body: `\n
             ${settings.businessName}: Vous avez un RDV le ${appointment.date} à ${appointment.time}. 
-            - Par: ${appointment.firstName} ${appointment.lastName}\n- Motif: ${appointment.service}\n- tel: ${appointment.phone}\n- adresse: ${appointment.address} \n\nGerez vos RDV sur votre espace admin: http://localhost:${PORT}/admin/${(await readJson(FILES.adminToken)).token}
+            - Par: ${appointment.firstName} ${appointment.lastName}\n- Motif: ${appointment.service}\n- tel: ${appointment.phone}\n- adresse: ${appointment.address} \n\nGerez vos RDV sur votre espace admin: https://www.massonjo-chauffage-sanitaire.fr/admin/${(await readJson(FILES.adminToken)).token}
             `,
             from: TWILIO_CONFIG.fromNumber,
-            to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
-            //   to: `+330750972601`,
+            // to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
+              to: `+330750972601`,
         });
 
 
