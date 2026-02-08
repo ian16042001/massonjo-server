@@ -298,7 +298,7 @@ async function sendConfirmationSMS(appointment, settings) {
         // SMS client 
         await twilio.messages.create({
             body: `\n
-            ${settings.businessName}: Votre RDV est confirmé le ${appointment.date} à ${appointment.time}.\n\nMotif: ${appointment.service} facturé 50€(règlement Espèce) \n\nAu plaisir de vous voir ! \n\nPour toute modification, contactez-nous au ${settings.businessPhone}.`,
+            ${settings.businessName}: Votre RDV est confirmé le ${appointment.date} à ${appointment.time}.\n\nMotif: ${appointment.service} facturé 40€ si pas d'intervention \n\nAu plaisir de vous voir ! \n\nPour toute modification, contactez-nous au ${settings.businessPhone}.`,
             from: TWILIO_CONFIG.fromNumber,
             //   to: `+33${appointment.phone}`,
             to: `+33${appointment.phone}`,
@@ -322,8 +322,8 @@ async function sendConfirmationSMS(appointment, settings) {
             - Par: ${appointment.firstName} ${appointment.lastName}\n- Motif: ${appointment.service}\n- tel: ${appointment.phone}\n- adresse: ${appointment.address} \n\nGerez vos RDV sur votre espace admin: https://www.massonjo-chauffage-sanitaire.fr/admin/${(await readJson(FILES.adminToken)).token}
             `,
             from: TWILIO_CONFIG.fromNumber,
-            // to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
-              to: `+330750972601`,
+            to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
+              // to: `+330750972601`,
         });
 
 
