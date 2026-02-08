@@ -72,10 +72,10 @@ function shouldDeleteSlot(slot, dateStr) {
     return true;
   }
   
-  // Si c'est aujourd'hui et qu'il reste moins de 5h avant le créneau → supprimer
+  // Si c'est aujourd'hui et qu'il reste moins de 24h avant le créneau → supprimer
   if (slotDate === today) {
     const minutesUntilSlot = slotMinutes - currentMinutes;
-    if (minutesUntilSlot <= 300) {
+    if (minutesUntilSlot <= 1440) {
       return true;
     }
   }
@@ -322,7 +322,7 @@ async function sendConfirmationSMS(appointment, settings) {
             - Par: ${appointment.firstName} ${appointment.lastName}\n- Motif: ${appointment.service}\n- tel: ${appointment.phone}\n- adresse: ${appointment.address} \n\nGerez vos RDV sur votre espace admin: https://www.massonjo-chauffage-sanitaire.fr/admin/${(await readJson(FILES.adminToken)).token}
             `,
             from: TWILIO_CONFIG.fromNumber,
-            to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
+            // to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
               // to: `+330750972601`,
         });
 
