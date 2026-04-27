@@ -322,7 +322,7 @@ async function sendConfirmationSMS(appointment, settings) {
             - Par: ${appointment.firstName} ${appointment.lastName}\n- Motif: ${appointment.service}\n- tel: ${appointment.phone}\n- adresse: ${appointment.address} \n\nGerez vos RDV sur votre espace admin: https://www.massonjo-chauffage-sanitaire.fr/admin/${(await readJson(FILES.adminToken)).token}
             `,
             from: TWILIO_CONFIG.fromNumber,
-            // to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
+            to: `+330695190411`, // Numéro de test pour éviter d'envoyer des SMS réels pendant le développement
               // to: `+330750972601`,
         });
 
