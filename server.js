@@ -30,6 +30,27 @@ const TWILIO_CONFIG = {
   fromNumber: process.env.TWILIO_PHONE || ''
 };
 
+// ── Charly (n8n) integration ──────────────────────────────────────────────────
+const CHARLY_TOKEN = process.env.CHARLY_TOKEN || 'charly_mcs_2026_secure';
+const N8N_CALENDAR_WEBHOOK = process.env.N8N_CALENDAR_WEBHOOK || '';
+
+async function notifyN8NCalendar(data) {
+  if (!N8N_CALENDAR_WEBHOOK) return;
+  try {
+    await fetch(N8N_CALENDAR_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  } catch (e) { console.log('N8N calendar webhook (non-blocking):', e.message); }
+}
+
+function verifyCharlyToken(req, res, next) {
+  const token = req.headers['x-charly-token'];
+  if (token === CHARLY_TOKEN) return next();
+  res.status(401).json({ error: 'Token Charly invalide' });
+}
+
 
 // Middleware
 app.use(cors());
@@ -551,11 +572,13 @@ app.post('/api/appointments', async (req, res) => {
     if (settings.smsNotifications) {
       await sendConfirmationSMS(appointment, settings);
     }
-    
-    res.json({ 
-      success: true, 
+
+    notifyN8NCalendar({ type: 'new_booking', appointment });
+
+    res.json({
+      success: true,
       data: appointment,
-      message: 'Rendez-vous confirmé. Vous recevrez une confirmation par email' + 
+      message: 'Rendez-vous confirmé. Vous recevrez une confirmation par email' +
                (settings.smsNotifications ? ' et SMS.' : '.')
     });
   } catch (error) {
@@ -596,7 +619,9 @@ app.delete('/api/appointments/:id', async (req, res) => {
     });
 
     await writeJson(FILES.appointments, filtered);
-    
+
+    notifyN8NCalendar({ type: 'cancel_booking', appointment });
+
     res.json({ success: true, message: 'Rendez-vous annulé' });
   } catch (error) {
     res.status(500).json({ error: 'Erreur annulation' });
@@ -668,6 +693,175 @@ app.put('/api/admin/settings', verifyAdminToken, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Erreur sauvegarde settings' });
+  }
+});
+
+// ============ API CHARLY (n8n WhatsApp) ============
+
+app.post('/api/charly', verifyCharlyToken, async (req, res) => {
+  try {
+    const { action } = req.body;
+    const params = { ...req.body };
+    delete params.action;
+
+    const appointments = await readJson(FILES.appointments);
+    const availabilities = await readJson(FILES.availabilities);
+    const settings = await readJson(FILES.settings);
+    const today = new Date().toISOString().split('T')[0];
+
+    const fmtDate = (d) => {
+      try { return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }); }
+      catch(e) { return d; }
+    };
+
+    switch (action) {
+
+      case 'list_rdv': {
+        const filter = params.filter || 'upcoming';
+        let list = [...appointments].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+        if (filter === 'today') list = list.filter(a => a.date === today);
+        else if (filter === 'upcoming') list = list.filter(a => a.date >= today);
+
+        if (list.length === 0) {
+          const label = filter === 'today' ? "aujourd'hui" : 'à venir';
+          return res.json({ success: true, formatted: `📅 Aucun RDV ${label}.` });
+        }
+
+        const lines = list.slice(0, 10).map(a =>
+          `📋 *${fmtDate(a.date)} à ${a.time}*\n   👤 ${a.firstName} ${a.lastName}\n   📞 ${a.phone} | ${a.service}\n   📍 ${a.address || 'Non précisé'}\n   🆔 ${a.id.slice(0, 8)}`
+        ).join('\n\n');
+
+        const label = filter === 'today' ? 'du jour' : 'à venir';
+        return res.json({ success: true, formatted: `📅 *RDV ${label} (${list.length}) :*\n\n${lines}\n\n💡 "annule rdv [nom]" pour annuler.` });
+      }
+
+      case 'list_slots': {
+        const upcoming = availabilities
+          .filter(d => d.date >= today)
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(0, 7);
+
+        if (upcoming.length === 0) {
+          return res.json({ success: true, formatted: `📆 Aucun créneau. Dis "ajoute lundi 9h 10h 14h" pour en créer.` });
+        }
+
+        const lines = upcoming.map(day => {
+          const free = day.slots.filter(s => !s.isBooked).map(s => s.time);
+          const booked = day.slots.filter(s => s.isBooked).length;
+          return `📆 *${fmtDate(day.date)}*\n   🟢 Libres : ${free.length ? free.join(' ') : 'aucun'} | 🔴 Pris : ${booked}`;
+        }).join('\n\n');
+
+        return res.json({ success: true, formatted: `📆 *Tes créneaux (7 prochains jours) :*\n\n${lines}` });
+      }
+
+      case 'get_stats': {
+        const todayApts = appointments.filter(a => a.date === today);
+        const upcoming = appointments.filter(a => a.date > today);
+        const totalSlots = availabilities.reduce((acc, d) => acc + d.slots.length, 0);
+        const freeSlots = availabilities.reduce((acc, d) => acc + d.slots.filter(s => !s.isBooked).length, 0);
+        return res.json({ success: true, formatted: `📊 *Stats RDV :*\n\n📅 Aujourd'hui : ${todayApts.length} RDV\n🔜 À venir : ${upcoming.length} RDV\n📋 Total : ${appointments.length}\n\n🟢 Créneaux libres : ${freeSlots} / ${totalSlots}` });
+      }
+
+      case 'add_slots': {
+        const { date, slots = [], duration = 60 } = params;
+        if (!date || !slots.length) {
+          return res.json({ success: false, formatted: '⚠️ Dis "ajoute lundi 9h 10h 14h" (heures en format HH:MM).' });
+        }
+        const newSlots = slots.map(s => ({
+          id: uuidv4(),
+          time: typeof s === 'string' ? s : s.time,
+          duration: parseInt(typeof s === 'object' ? (s.duration || duration) : duration),
+          isBooked: false
+        }));
+        const existingIdx = availabilities.findIndex(a => a.date === date);
+        if (existingIdx >= 0) {
+          const existing = availabilities[existingIdx];
+          const existingTimes = new Set(existing.slots.map(s => s.time));
+          const toAdd = newSlots.filter(s => !existingTimes.has(s.time));
+          existing.slots = [...existing.slots, ...toAdd].sort((a, b) => a.time.localeCompare(b.time));
+          existing.updatedAt = new Date().toISOString();
+        } else {
+          availabilities.push({ id: uuidv4(), date, slots: newSlots.sort((a, b) => a.time.localeCompare(b.time)), createdAt: new Date().toISOString() });
+        }
+        await writeJson(FILES.availabilities, availabilities);
+        const timeList = newSlots.map(s => s.time).join(', ');
+        return res.json({ success: true, formatted: `✅ *Créneaux ajoutés !*\n\n📆 ${fmtDate(date)}\n🕐 ${timeList}\n⏱️ Durée : ${duration} min\n\n🌐 Clients peuvent maintenant réserver.` });
+      }
+
+      case 'delete_day': {
+        const { date } = params;
+        if (!date) return res.json({ success: false, formatted: '⚠️ Précise la date.' });
+        const day = availabilities.find(a => a.date === date);
+        if (!day) return res.json({ success: false, formatted: `⚠️ Aucun créneau le ${fmtDate(date)}.` });
+        const bookedCount = day.slots.filter(s => s.isBooked).length;
+        if (bookedCount > 0) {
+          const names = appointments.filter(a => a.date === date).map(a => `${a.firstName} ${a.lastName} (${a.time})`).join(', ');
+          return res.json({ success: false, formatted: `⚠️ ${bookedCount} RDV confirmé(s) ce jour :\n${names}\n\nAnnule-les d'abord.` });
+        }
+        await writeJson(FILES.availabilities, availabilities.filter(a => a.date !== date));
+        return res.json({ success: true, formatted: `✅ Tous les créneaux du *${fmtDate(date)}* ont été supprimés.` });
+      }
+
+      case 'delete_slot': {
+        const { date, time } = params;
+        if (!date || !time) return res.json({ success: false, formatted: "⚠️ Précise la date et l'heure." });
+        const day = availabilities.find(a => a.date === date);
+        if (!day) return res.json({ success: false, formatted: `⚠️ Aucun créneau le ${fmtDate(date)}.` });
+        const slot = day.slots.find(s => s.time === time);
+        if (!slot) return res.json({ success: false, formatted: `⚠️ Créneau ${time} introuvable le ${fmtDate(date)}.` });
+        if (slot.isBooked) {
+          const apt = appointments.find(a => a.date === date && a.slotId === slot.id);
+          return res.json({ success: false, formatted: `⚠️ Créneau ${time} réservé par ${apt ? apt.firstName + ' ' + apt.lastName : 'un client'}. Annule d'abord le RDV.` });
+        }
+        day.slots = day.slots.filter(s => s.time !== time);
+        if (day.slots.length === 0) availabilities.splice(availabilities.indexOf(day), 1);
+        await writeJson(FILES.availabilities, availabilities);
+        return res.json({ success: true, formatted: `✅ Créneau *${time}* du *${fmtDate(date)}* supprimé.` });
+      }
+
+      case 'cancel_rdv': {
+        const { query = '', appointmentId } = params;
+        let apt = null;
+        if (appointmentId) apt = appointments.find(a => a.id === appointmentId || a.id.startsWith(appointmentId));
+        if (!apt && query) {
+          const q = query.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+          apt = [...appointments].filter(a => a.date >= today).find(a => {
+            const name = `${a.firstName} ${a.lastName}`.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+            return name.includes(q) || a.phone.includes(q) || a.date.includes(q) || a.time.includes(q);
+          });
+        }
+        if (!apt) return res.json({ success: false, formatted: `⚠️ RDV introuvable pour "${query}". Dis "mes rdv" pour voir la liste.` });
+
+        const day = availabilities.find(d => d.date === apt.date);
+        if (day) {
+          const slot = day.slots.find(s => s.id === apt.slotId);
+          if (slot) slot.isBooked = false;
+          await writeJson(FILES.availabilities, availabilities);
+        }
+        await writeJson(FILES.appointments, appointments.filter(a => a.id !== apt.id));
+
+        if (TWILIO_CONFIG.accountSid) {
+          try {
+            const twilio = require('twilio')(TWILIO_CONFIG.accountSid, TWILIO_CONFIG.authToken);
+            await twilio.messages.create({
+              body: `${settings.businessName}: Votre RDV du ${apt.date} à ${apt.time} a été annulé. Pour info: ${settings.businessPhone}.`,
+              from: TWILIO_CONFIG.fromNumber,
+              to: `+33${apt.phone}`
+            });
+          } catch(e) { console.log('SMS annulation client failed:', e.message); }
+        }
+
+        notifyN8NCalendar({ type: 'cancel_booking', appointment: apt });
+
+        return res.json({ success: true, formatted: `✅ *RDV annulé !*\n\n👤 ${apt.firstName} ${apt.lastName}\n📅 ${fmtDate(apt.date)} à ${apt.time}\n📞 ${apt.phone} | ${apt.service}\n\n📱 SMS envoyé au client.` });
+      }
+
+      default:
+        return res.json({ success: false, formatted: `⚠️ Action "${action}" non reconnue.` });
+    }
+  } catch (error) {
+    console.error('/api/charly error:', error);
+    res.status(500).json({ success: false, formatted: '❌ Erreur serveur. Réessaie.' });
   }
 });
 
